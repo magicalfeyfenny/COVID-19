@@ -1,12 +1,15 @@
 # COVID-19 Forecasting Project
 
-This repo contains a Jupyter notebook workflow plus two supporting scripts for the Johns Hopkins CSSE COVID-19 US time-series data.
+This repo contains a Jupyter notebook workflow plus supporting scripts for the Johns Hopkins CSSE COVID-19 US time-series data.
 
 Project layout:
 - `notebooks/covid19_forecasting.ipynb` runs the baseline review and GRU benchmark.
 - `scripts/prepare_dataset.py` prepares the state-level daily dataset.
 - `scripts/process_pipeline.py` builds features, baselines, and sequence inputs.
-- `scripts/gru_benchmark.py` contains the reusable GRU benchmark helpers used by the notebook.
+- `scripts/gru_benchmark.py` contains the shared GRU benchmark helpers used by the notebook.
+- `scripts/gru_direct.py` runs the original direct-target GRU configuration.
+- `scripts/gru_residual.py` runs the tuned residual-target GRU configuration.
+- `scripts/gru_state_consistency.py` runs the state-aware GRU configuration for stronger per-state consistency.
 - `csse_covid_19_data/csse_covid_19_time_series/` contains the Johns Hopkins time-series CSVs already copied into the repo.
 - `data/raw/` is an alternate location for local raw copies.
 - `data/processed/` is for generated outputs.
