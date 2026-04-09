@@ -9,11 +9,11 @@ from scripts.gru_benchmark import run_gru_benchmark
 MODEL_KEY = "gru_direct"
 DISPLAY_NAME = "GRU Direct"
 
-DIRECT_HIDDEN_SIZE = 64
+DIRECT_HIDDEN_SIZE = 96
 DIRECT_DROPOUT = 0.10
 DIRECT_BATCH_SIZE = 512
-DIRECT_EPOCHS = 6
-DIRECT_LEARNING_RATE = 1e-3
+DIRECT_EPOCHS = 50
+DIRECT_LEARNING_RATE = 8e-4
 DIRECT_WEIGHT_DECAY = 1e-5
 DIRECT_USE_LOG1P = True
 DIRECT_TARGET_MODE = "raw"
@@ -21,7 +21,7 @@ DIRECT_TARGET_SCALE_MODE = "global"
 DIRECT_LOSS_NAME = "mse"
 DIRECT_SAMPLE_WEIGHT_MODE = "none"
 
-
+#pass through to gru_benchmark.py
 def run_direct_gru_benchmark(
     train_X: np.ndarray,
     train_y: np.ndarray,

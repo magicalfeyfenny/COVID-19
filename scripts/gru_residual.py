@@ -12,7 +12,7 @@ DISPLAY_NAME = "GRU Residual"
 RESIDUAL_HIDDEN_SIZE = 96
 RESIDUAL_DROPOUT = 0.10
 RESIDUAL_BATCH_SIZE = 512
-RESIDUAL_EPOCHS = 10
+RESIDUAL_EPOCHS = 50
 RESIDUAL_LEARNING_RATE = 8e-4
 RESIDUAL_WEIGHT_DECAY = 1e-5
 RESIDUAL_USE_LOG1P = False
@@ -21,7 +21,7 @@ RESIDUAL_TARGET_SCALE_MODE = "global"
 RESIDUAL_LOSS_NAME = "huber"
 RESIDUAL_SAMPLE_WEIGHT_MODE = "none"
 
-
+#pass through to gru_benchmark.py
 def run_residual_gru_benchmark(
     train_X: np.ndarray,
     train_y: np.ndarray,

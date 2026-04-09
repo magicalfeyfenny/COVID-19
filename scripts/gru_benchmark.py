@@ -6,11 +6,12 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+#define the actual network and training loop
 
 DEFAULT_RNN_HIDDEN_SIZE = 96
 DEFAULT_RNN_DROPOUT = 0.10
 DEFAULT_RNN_BATCH_SIZE = 512
-DEFAULT_RNN_EPOCHS = 10
+DEFAULT_RNN_EPOCHS = 50
 DEFAULT_RNN_LEARNING_RATE = 8e-4
 DEFAULT_RNN_WEIGHT_DECAY = 1e-5
 DEFAULT_RNN_USE_LOG1P = False

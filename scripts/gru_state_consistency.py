@@ -21,7 +21,7 @@ STATE_TARGET_SCALE_MODE = "state"
 STATE_LOSS_NAME = "huber"
 STATE_SAMPLE_WEIGHT_MODE = "inverse_sqrt_state_target_scale"
 
-
+#pass through to gru_benchmark.py
 def run_state_consistency_gru_benchmark(
     train_X: np.ndarray,
     train_y: np.ndarray,
