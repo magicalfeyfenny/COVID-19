@@ -3,9 +3,10 @@
 This repo contains a Jupyter notebook workflow plus two supporting scripts for the Johns Hopkins CSSE COVID-19 US time-series data.
 
 Project layout:
-- `notebooks/covid19_forecasting_starter.ipynb` runs the baseline review and GRU benchmark.
+- `notebooks/covid19_forecasting.ipynb` runs the baseline review and GRU benchmark.
 - `scripts/prepare_dataset.py` prepares the state-level daily dataset.
 - `scripts/process_pipeline.py` builds features, baselines, and sequence inputs.
+- `scripts/gru_benchmark.py` contains the reusable GRU benchmark helpers used by the notebook.
 - `csse_covid_19_data/csse_covid_19_time_series/` contains the Johns Hopkins time-series CSVs already copied into the repo.
 - `data/raw/` is an alternate location for local raw copies.
 - `data/processed/` is for generated outputs.
@@ -14,7 +15,7 @@ Project layout:
 
 VSCode:
 1. Use the repo venv at `.venv` or the `Python (.venv) COVID-19` notebook kernel.
-2. Open `notebooks/covid19_forecasting_starter.ipynb`.
+2. Open `notebooks/covid19_forecasting.ipynb`.
 3. Run the notebook top to bottom.
 
 Optional CLI:
