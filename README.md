@@ -9,7 +9,7 @@ Project layout:
 - `scripts/gru_benchmark.py` contains the shared GRU benchmark helpers used by the notebook.
 - `scripts/gru_direct.py` runs the original direct-target GRU configuration.
 - `scripts/gru_residual.py` runs the tuned residual-target GRU configuration.
-- `scripts/gru_state_consistency.py` runs the state-aware GRU configuration for stronger per-state consistency.
+- `scripts/gru_state_consistency.py` runs the state-aware GRU configuration with a learned state embedding and state-balanced checkpointing.
 - `csse_covid_19_data/csse_covid_19_time_series/` contains the Johns Hopkins time-series CSVs already copied into the repo.
 - `data/raw/` is an alternate location for local raw copies.
 - `data/processed/` is for generated outputs.

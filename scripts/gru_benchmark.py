@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from typing import Callable
 
 #define the actual network and training loop
 
@@ -19,6 +20,8 @@ DEFAULT_RNN_TARGET_MODE = "residual"
 DEFAULT_RNN_TARGET_SCALE_MODE = "global"
 DEFAULT_RNN_LOSS_NAME = "huber"
 DEFAULT_RNN_SAMPLE_WEIGHT_MODE = "none"
+DEFAULT_RNN_STATE_EMBEDDING_DIM = 0
+DEFAULT_RNN_CHECKPOINT_METRIC_NAME = "eval_loss"
 
 
 def build_base_sequence_targets(
@@ -77,6 +80,11 @@ def fit_sequence_preprocessor(
     state_target_mean: dict[str, float] = {}
     state_target_std: dict[str, float] = {}
     state_target_scale: dict[str, float] = {}
+    state_to_index: dict[str, int] = {}
+
+    if train_meta is not None:
+        unique_states = sorted(train_meta["state"].astype(str).unique())
+        state_to_index = {state_name: index for index, state_name in enumerate(unique_states)}
 
     if target_scale_mode == "state":
         if train_meta is None:
@@ -108,7 +116,24 @@ def fit_sequence_preprocessor(
         "state_target_mean": state_target_mean,
         "state_target_std": state_target_std,
         "state_target_scale": state_target_scale,
+        "state_to_index": state_to_index,
     }
+
+
+def encode_state_indices(meta_frame: pd.DataFrame | None, preprocessor: dict[str, object]) -> np.ndarray:
+    if meta_frame is None:
+        raise ValueError("meta_frame is required to encode state indices.")
+
+    state_to_index = dict(preprocessor.get("state_to_index", {}))
+    if not state_to_index:
+        return np.zeros(len(meta_frame), dtype=np.int64)
+
+    encoded = meta_frame["state"].map(state_to_index)
+    if encoded.isna().any():
+        missing_states = sorted(meta_frame.loc[encoded.isna(), "state"].astype(str).unique())
+        raise ValueError(f"Found states without an index mapping: {missing_states}")
+
+    return encoded.to_numpy(dtype=np.int64)
 
 
 def transform_sequence_features(X: np.ndarray, preprocessor: dict[str, object]) -> np.ndarray:
@@ -197,7 +222,27 @@ def build_sequence_sample_weights(
         weights = weights / weights.mean()
         return weights.astype(np.float32)
 
+    if sample_weight_mode == "equal_state_total":
+        if meta_frame is None:
+            raise ValueError("meta_frame is required when sample_weight_mode is state-based.")
+
+        state_counts = meta_frame["state"].value_counts().astype(np.float32)
+        state_weights = 1.0 / state_counts
+        weights = meta_frame["state"].map(state_weights).to_numpy(dtype=np.float32)
+        weights = weights / weights.mean()
+        return weights.astype(np.float32)
+
     raise ValueError(f"Unsupported sample_weight_mode: {sample_weight_mode}")
+
+
+def compute_mean_state_mae(actual: np.ndarray, predicted: np.ndarray, meta_frame: pd.DataFrame) -> float:
+    score_frame = meta_frame[["state"]].copy()
+    score_frame["actual"] = actual.astype(np.float32)
+    score_frame["predicted"] = predicted.astype(np.float32)
+    score_frame["abs_error"] = (score_frame["actual"] - score_frame["predicted"]).abs()
+
+    per_state_mae = score_frame.groupby("state", sort=True)["abs_error"].mean()
+    return float(per_state_mae.mean())
 
 
 def pick_torch_device() -> torch.device:
@@ -219,15 +264,39 @@ def get_loss_fn(loss_name: str, *, reduction: str = "mean") -> nn.Module:
 
 
 class ForecastGRU(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int, dropout: float) -> None:
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        dropout: float,
+        *,
+        state_vocab_size: int = 0,
+        state_embedding_dim: int = DEFAULT_RNN_STATE_EMBEDDING_DIM,
+    ) -> None:
         super().__init__()
         self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, batch_first=True)
         self.dropout = nn.Dropout(dropout)
-        self.output = nn.Linear(hidden_size, 1)
+        self.use_state_embedding = state_vocab_size > 0 and state_embedding_dim > 0
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_state_embedding:
+            self.state_embedding = nn.Embedding(state_vocab_size, state_embedding_dim)
+            output_input_size = hidden_size + state_embedding_dim
+        else:
+            self.state_embedding = None
+            output_input_size = hidden_size
+
+        self.output = nn.Linear(output_input_size, 1)
+
+    def forward(self, x: torch.Tensor, state_index: torch.Tensor | None = None) -> torch.Tensor:
         _, hidden_state = self.gru(x)
         last_hidden = self.dropout(hidden_state[-1])
+
+        if self.use_state_embedding:
+            if state_index is None:
+                raise ValueError("state_index is required when state embeddings are enabled.")
+            state_hidden = self.state_embedding(state_index)
+            last_hidden = torch.cat([last_hidden, state_hidden], dim=1)
+
         prediction = self.output(last_hidden).squeeze(-1)
         return prediction
 
@@ -248,32 +317,53 @@ def train_gru_model(
     loss_name: str = DEFAULT_RNN_LOSS_NAME,
     train_sample_weights: np.ndarray | None = None,
     eval_sample_weights: np.ndarray | None = None,
+    train_state_index: np.ndarray | None = None,
+    eval_state_index: np.ndarray | None = None,
+    state_vocab_size: int = 0,
+    state_embedding_dim: int = DEFAULT_RNN_STATE_EMBEDDING_DIM,
+    checkpoint_metric_name: str = DEFAULT_RNN_CHECKPOINT_METRIC_NAME,
+    checkpoint_metric_fn: Callable[[ForecastGRU], float] | None = None,
 ) -> tuple[ForecastGRU, pd.DataFrame]:
     if train_sample_weights is None:
         train_sample_weights = np.ones(len(train_y), dtype=np.float32)
     if eval_sample_weights is None:
         eval_sample_weights = np.ones(len(eval_y), dtype=np.float32)
+    if train_state_index is None:
+        train_state_index = np.zeros(len(train_y), dtype=np.int64)
+    if eval_state_index is None:
+        eval_state_index = np.zeros(len(eval_y), dtype=np.int64)
+
+    if checkpoint_metric_name != "eval_loss" and checkpoint_metric_fn is None:
+        raise ValueError("checkpoint_metric_fn is required when checkpoint_metric_name is not 'eval_loss'.")
 
     train_dataset = TensorDataset(
         torch.from_numpy(train_X),
         torch.from_numpy(train_y),
         torch.from_numpy(train_sample_weights.astype(np.float32)),
+        torch.from_numpy(train_state_index.astype(np.int64)),
     )
     eval_dataset = TensorDataset(
         torch.from_numpy(eval_X),
         torch.from_numpy(eval_y),
         torch.from_numpy(eval_sample_weights.astype(np.float32)),
+        torch.from_numpy(eval_state_index.astype(np.int64)),
     )
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
 
-    model = ForecastGRU(input_size=train_X.shape[2], hidden_size=hidden_size, dropout=dropout).to(device)
+    model = ForecastGRU(
+        input_size=train_X.shape[2],
+        hidden_size=hidden_size,
+        dropout=dropout,
+        state_vocab_size=state_vocab_size,
+        state_embedding_dim=state_embedding_dim,
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     loss_fn = get_loss_fn(loss_name, reduction="none")
 
     history_rows: list[dict[str, float | int | str]] = []
-    best_eval_loss: float | None = None
+    best_checkpoint_metric: float | None = None
     best_state: dict[str, torch.Tensor] | None = None
 
     for epoch_index in range(epochs):
@@ -281,13 +371,14 @@ def train_gru_model(
         train_loss_sum = 0.0
         train_row_count = 0
 
-        for batch_X, batch_y, batch_weights in train_loader:
+        for batch_X, batch_y, batch_weights, batch_state_index in train_loader:
             batch_X = batch_X.to(device)
             batch_y = batch_y.to(device)
             batch_weights = batch_weights.to(device)
+            batch_state_index = batch_state_index.to(device)
 
             optimizer.zero_grad()
-            batch_prediction = model(batch_X)
+            batch_prediction = model(batch_X, batch_state_index)
             batch_loss = loss_fn(batch_prediction, batch_y)
             batch_loss = (batch_loss * batch_weights).mean()
             batch_loss.backward()
@@ -303,12 +394,13 @@ def train_gru_model(
         eval_row_count = 0
 
         with torch.no_grad():
-            for batch_X, batch_y, batch_weights in eval_loader:
+            for batch_X, batch_y, batch_weights, batch_state_index in eval_loader:
                 batch_X = batch_X.to(device)
                 batch_y = batch_y.to(device)
                 batch_weights = batch_weights.to(device)
+                batch_state_index = batch_state_index.to(device)
 
-                batch_prediction = model(batch_X)
+                batch_prediction = model(batch_X, batch_state_index)
                 batch_loss = loss_fn(batch_prediction, batch_y)
                 batch_loss = (batch_loss * batch_weights).mean()
 
@@ -318,17 +410,25 @@ def train_gru_model(
 
         train_loss = train_loss_sum / train_row_count
         eval_loss = eval_loss_sum / eval_row_count
+
+        if checkpoint_metric_name == "eval_loss":
+            checkpoint_metric_value = eval_loss
+        else:
+            checkpoint_metric_value = float(checkpoint_metric_fn(model))
+
         history_rows.append(
             {
                 "epoch": epoch_index + 1,
                 "loss_name": loss_name,
                 "train_loss": train_loss,
                 "eval_loss": eval_loss,
+                "checkpoint_metric_name": checkpoint_metric_name,
+                "checkpoint_metric_value": checkpoint_metric_value,
             }
         )
 
-        if best_eval_loss is None or eval_loss < best_eval_loss:
-            best_eval_loss = eval_loss
+        if best_checkpoint_metric is None or checkpoint_metric_value < best_checkpoint_metric:
+            best_checkpoint_metric = checkpoint_metric_value
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
     if best_state is not None:
@@ -344,17 +444,22 @@ def predict_gru_model(
     device: torch.device,
     *,
     batch_size: int = DEFAULT_RNN_BATCH_SIZE,
+    state_index: np.ndarray | None = None,
 ) -> np.ndarray:
-    dataset = TensorDataset(torch.from_numpy(features))
+    if state_index is None:
+        state_index = np.zeros(len(features), dtype=np.int64)
+
+    dataset = TensorDataset(torch.from_numpy(features), torch.from_numpy(state_index.astype(np.int64)))
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     model.eval()
     prediction_rows: list[np.ndarray] = []
 
     with torch.no_grad():
-        for (batch_X,) in loader:
+        for batch_X, batch_state_index in loader:
             batch_X = batch_X.to(device)
-            batch_prediction = model(batch_X).detach().cpu().numpy()
+            batch_state_index = batch_state_index.to(device)
+            batch_prediction = model(batch_X, batch_state_index).detach().cpu().numpy()
             prediction_rows.append(batch_prediction)
 
     predictions = np.concatenate(prediction_rows, axis=0)
@@ -385,6 +490,8 @@ def run_gru_benchmark(
     target_scale_mode: str,
     loss_name: str,
     sample_weight_mode: str,
+    state_embedding_dim: int = DEFAULT_RNN_STATE_EMBEDDING_DIM,
+    checkpoint_metric_name: str = DEFAULT_RNN_CHECKPOINT_METRIC_NAME,
 ) -> dict[str, object]:
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
@@ -405,6 +512,8 @@ def run_gru_benchmark(
 
     train_X_scaled = transform_sequence_features(train_X, preprocessor)
     eval_X_scaled = transform_sequence_features(eval_X, preprocessor)
+    train_state_index = encode_state_indices(train_meta, preprocessor)
+    eval_state_index = encode_state_indices(eval_meta, preprocessor)
     train_y_scaled = transform_sequence_targets(
         train_y,
         preprocessor,
@@ -430,6 +539,27 @@ def run_gru_benchmark(
     )
 
     device = pick_torch_device()
+
+    checkpoint_metric_fn: Callable[[ForecastGRU], float] | None = None
+    if checkpoint_metric_name == "mean_state_mae":
+        def checkpoint_metric_fn(model: ForecastGRU) -> float:
+            prediction_scaled = predict_gru_model(
+                model,
+                eval_X_scaled,
+                device=device,
+                batch_size=batch_size,
+                state_index=eval_state_index,
+            )
+            predictions = inverse_transform_sequence_targets(
+                prediction_scaled,
+                preprocessor,
+                meta_frame=eval_meta,
+                baseline_last_observed=eval_last_observed,
+            )
+            return compute_mean_state_mae(eval_y, predictions, eval_meta)
+    elif checkpoint_metric_name != "eval_loss":
+        raise ValueError(f"Unsupported checkpoint_metric_name: {checkpoint_metric_name}")
+
     model, history = train_gru_model(
         train_X_scaled,
         train_y_scaled,
@@ -445,10 +575,22 @@ def run_gru_benchmark(
         loss_name=loss_name,
         train_sample_weights=train_sample_weights,
         eval_sample_weights=eval_sample_weights,
+        train_state_index=train_state_index,
+        eval_state_index=eval_state_index,
+        state_vocab_size=len(dict(preprocessor.get("state_to_index", {}))),
+        state_embedding_dim=state_embedding_dim,
+        checkpoint_metric_name=checkpoint_metric_name,
+        checkpoint_metric_fn=checkpoint_metric_fn,
     )
 
     prediction_column = f"{model_key}_prediction"
-    prediction_scaled = predict_gru_model(model, eval_X_scaled, device=device, batch_size=batch_size)
+    prediction_scaled = predict_gru_model(
+        model,
+        eval_X_scaled,
+        device=device,
+        batch_size=batch_size,
+        state_index=eval_state_index,
+    )
     predictions = inverse_transform_sequence_targets(
         prediction_scaled,
         preprocessor,

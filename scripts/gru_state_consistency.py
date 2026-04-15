@@ -12,14 +12,16 @@ DISPLAY_NAME = "GRU State Consistency"
 STATE_HIDDEN_SIZE = 96
 STATE_DROPOUT = 0.10
 STATE_BATCH_SIZE = 512
-STATE_EPOCHS = 10
+STATE_EPOCHS = 50
 STATE_LEARNING_RATE = 8e-4
 STATE_WEIGHT_DECAY = 1e-5
 STATE_USE_LOG1P = False
 STATE_TARGET_MODE = "residual"
 STATE_TARGET_SCALE_MODE = "state"
 STATE_LOSS_NAME = "huber"
-STATE_SAMPLE_WEIGHT_MODE = "inverse_sqrt_state_target_scale"
+STATE_SAMPLE_WEIGHT_MODE = "equal_state_total"
+STATE_EMBEDDING_DIM = 8
+STATE_CHECKPOINT_METRIC_NAME = "mean_state_mae"
 
 #pass through to gru_benchmark.py
 def run_state_consistency_gru_benchmark(
@@ -57,4 +59,6 @@ def run_state_consistency_gru_benchmark(
         target_scale_mode=STATE_TARGET_SCALE_MODE,
         loss_name=STATE_LOSS_NAME,
         sample_weight_mode=STATE_SAMPLE_WEIGHT_MODE,
+        state_embedding_dim=STATE_EMBEDDING_DIM,
+        checkpoint_metric_name=STATE_CHECKPOINT_METRIC_NAME,
     )
